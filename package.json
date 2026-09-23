@@ -1,0 +1,18 @@
+{
+  "name": "prrr-e2ee-chat",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Минималистичный анонимный чат со сквозным шифрованием",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check public/js/crypto.js && node --check public/js/app.js"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}

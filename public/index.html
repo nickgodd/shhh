@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  <title>prrr — приватный чат</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <main id="startScreen" class="start-screen">
+    <div class="start-card">
+      <div class="wordmark" aria-label="prrr">prrr</div>
+      <p class="start-copy">Анонимный разговор.<br>Сообщения зашифрованы у вас.</p>
+      <button id="createSessionButton" class="button button-primary start-button" type="button">
+        Создать сессию
+      </button>
+      <p id="startStatus" class="start-status" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <main id="workspace" class="workspace" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Сессия и чаты">
+      <div class="sidebar-toolbar">
+        <div class="profile-wrap">
+          <button
+            id="profileButton"
+            class="icon-button"
+            type="button"
+            aria-label="Показать профиль"
+            aria-expanded="false"
+            aria-controls="profilePanel"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"></path>
+              <path d="M4.5 20a7.5 7.5 0 0 1 15 0"></path>
+            </svg>
+          </button>
+
+          <div id="profilePanel" class="profile-panel" hidden>
+            <p class="eyebrow">Идентификатор</p>
+            <code id="profileId" class="profile-value"></code>
+            <p class="eyebrow">Публичный ключ сессии</p>
+            <code id="profileKey" class="profile-value profile-key"></code>
+            <button id="exitButton" class="button button-danger button-full" type="button">Выйти</button>
+          </div>
+        </div>
+
+        <form id="searchForm" class="search-form" autocomplete="off">
+          <label class="sr-only" for="searchInput">Идентификатор собеседника</label>
+          <input
+            id="searchInput"
+            class="search-input"
+            type="text"
+            inputmode="text"
+            maxlength="16"
+            placeholder="Идентификатор"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button class="icon-button search-button" type="submit" aria-label="Найти">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5"></circle>
+              <path d="m15.5 15.5 5 5"></path>
+            </svg>
+          </button>
+        </form>
+      </div>
+
+      <div id="searchResult" class="search-result" hidden>
+        <p class="eyebrow">Найден</p>
+        <code id="searchResultId" class="profile-value"></code>
+        <button id="requestButton" class="button button-primary button-full" type="button">
+          Отправить запрос
+        </button>
+      </div>
+
+      <div class="sidebar-scroll">
+        <section id="incomingSection" class="list-section" hidden>
+          <h2 class="list-title">Входящие</h2>
+          <div id="incomingList" class="request-list"></div>
+        </section>
+
+        <section id="outgoingSection" class="list-section" hidden>
+          <h2 class="list-title">Запросы</h2>
+          <div id="outgoingList" class="request-list"></div>
+        </section>
+
+        <section class="list-section chats-section">
+          <h2 class="list-title">Чаты</h2>
+          <div id="chatList" class="chat-list"></div>
+          <p id="emptyChatList" class="sidebar-empty">Здесь появятся чаты.</p>
+        </section>
+      </div>
+    </aside>
+
+    <section id="chatPanel" class="chat-panel" aria-label="Чат">
+      <header class="chat-header">
+        <button id="backButton" class="icon-button back-button" type="button" aria-label="К списку чатов">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6"></path>
+          </svg>
+        </button>
+
+        <div class="chat-heading">
+          <h1 id="chatTitle">prrr</h1>
+          <p id="chatState" class="chat-state">E2EE</p>
+        </div>
+
+        <div class="menu-wrap">
+          <button
+            id="chatMenuButton"
+            class="icon-button menu-button"
+            type="button"
+            aria-label="Меню чата"
+            aria-expanded="false"
+            aria-controls="chatMenu"
+            disabled
+          >⋯</button>
+          <div id="chatMenu" class="chat-menu" hidden>
+            <button id="endChatButton" class="menu-item" type="button">Завершить чат</button>
+          </div>
+        </div>
+      </header>
+
+      <div id="fingerprintBar" class="fingerprint-bar" hidden>
+        <span class="eyebrow">Отпечаток ключа</span>
+        <code id="fingerprint"></code>
+      </div>
+
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text">
+        <div id="emptyChat" class="empty-chat">
+          <div class="empty-mark" aria-hidden="true">↔</div>
+          <h2>Найдите собеседника</h2>
+          <p>Введите его 16-символьный идентификатор и отправьте запрос.</p>
+        </div>
+      </div>
+
+      <form id="messageForm" class="composer" autocomplete="off">
+        <label class="sr-only" for="messageInput">Сообщение</label>
+        <textarea
+          id="messageInput"
+          rows="2"
+          maxlength="2048"
+          placeholder="Сообщение"
+          enterkeyhint="send"
+          disabled
+        ></textarea>
+        <div class="composer-actions">
+          <span id="byteCounter" class="byte-counter">0 / 2 КБ</span>
+          <button id="sendButton" class="button button-primary" type="submit" disabled>Отправить</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <dialog id="requestDialog" class="request-dialog" aria-labelledby="requestDialogTitle">
+    <div class="dialog-content">
+      <p class="eyebrow">Входящий запрос</p>
+      <h2 id="requestDialogTitle">Открыть чат?</h2>
+      <p class="dialog-copy">Запрос отправил:</p>
+      <code id="requestDialogId" class="dialog-id"></code>
+      <p class="dialog-note">После открытия сравните отпечаток ключа по независимому каналу.</p>
+      <div class="dialog-actions">
+        <button id="rejectRequestButton" class="button" type="button">Отклонить</button>
+        <button id="acceptRequestButton" class="button button-primary" type="button">Принять</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
