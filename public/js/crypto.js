@@ -1,5 +1,7 @@
 const textEncoder = new TextEncoder();
 const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const CHAT_KDF_CONTEXT = "shhh-chat-v1";
+const CHAT_KDF_OUTPUT_BYTES = 52;
 
 export const MAX_MESSAGE_BYTES = 2048;
 
@@ -110,13 +112,78 @@ export async function createEphemeralKeyPair() {
   return generateX25519KeyPair();
 }
 
-function orderedKeyMaterial(chatId, localId, localPublicKey, peerId, peerPublicKey) {
-  const endpoints = [
-    { id: localId, publicKey: localPublicKey },
-    { id: peerId, publicKey: peerPublicKey },
-  ].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+function concatBytes(...parts) {
+  const length = parts.reduce((total, part) => total + part.byteLength, 0);
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
+}
 
-  return `prrr-chat-v1|${chatId}|${endpoints[0].id}:${endpoints[0].publicKey}|${endpoints[1].id}:${endpoints[1].publicKey}`;
+function encodeLength(length) {
+  if (!Number.isSafeInteger(length) || length < 0 || length > 0xffff_ffff) {
+    throw new Error("Некорректная длина данных.");
+  }
+  return new Uint8Array([
+    (length >>> 24) & 0xff,
+    (length >>> 16) & 0xff,
+    (length >>> 8) & 0xff,
+    length & 0xff,
+  ]);
+}
+
+function compareBytes(left, right) {
+  const length = Math.min(left.byteLength, right.byteLength);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.byteLength - right.byteLength;
+}
+
+export function buildOrderedChatContext({
+  chatId,
+  localId,
+  localEphemeralPublicKey,
+  peerId,
+  peerEphemeralPublicKey,
+}) {
+  const localPublicKeyBytes = base64ToBytes(localEphemeralPublicKey);
+  const peerPublicKeyBytes = base64ToBytes(peerEphemeralPublicKey);
+  if (localPublicKeyBytes.length !== 32 || peerPublicKeyBytes.length !== 32) {
+    throw new Error("Некорректный публичный ключ X25519.");
+  }
+
+  const localIdBytes = textEncoder.encode(localId);
+  const peerIdBytes = textEncoder.encode(peerId);
+  const endpoints = [
+    { id: localIdBytes, publicKey: localPublicKeyBytes },
+    { id: peerIdBytes, publicKey: peerPublicKeyBytes },
+  ].sort((left, right) => (
+    compareBytes(left.publicKey, right.publicKey)
+    || compareBytes(left.id, right.id)
+  ));
+
+  const label = textEncoder.encode(CHAT_KDF_CONTEXT);
+  const chatIdBytes = textEncoder.encode(chatId);
+  const parts = [
+    encodeLength(label.length),
+    label,
+    encodeLength(chatIdBytes.length),
+    chatIdBytes,
+    new Uint8Array([endpoints.length]),
+  ];
+  for (const endpoint of endpoints) {
+    parts.push(
+      encodeLength(endpoint.id.byteLength),
+      endpoint.id,
+      encodeLength(endpoint.publicKey.byteLength),
+      endpoint.publicKey,
+    );
+  }
+  return concatBytes(...parts);
 }
 
 export async function deriveChatContext({
@@ -130,14 +197,14 @@ export async function deriveChatContext({
   if (localId === peerId) throw new Error("Нельзя создать чат с самой собой.");
 
   const peerPublicKey = await importX25519PublicKey(peerEphemeralPublicKey);
-  const material = orderedKeyMaterial(
+  const material = buildOrderedChatContext({
     chatId,
     localId,
     localEphemeralPublicKey,
     peerId,
     peerEphemeralPublicKey,
-  );
-  const salt = new Uint8Array(await subtle().digest("SHA-256", textEncoder.encode(material)));
+  });
+  const salt = new Uint8Array(await subtle().digest("SHA-256", material));
   const sharedSecret = new Uint8Array(
     await subtle().deriveBits(
       { name: "X25519", public: peerPublicKey },
@@ -157,10 +224,10 @@ export async function deriveChatContext({
         name: "HKDF",
         hash: "SHA-256",
         salt,
-        info: textEncoder.encode(`${material}|key-and-fingerprint`),
+        info: concatBytes(material, textEncoder.encode("key-and-fingerprint")),
       },
       hkdfKey,
-      (32 + 20) * 8,
+      CHAT_KDF_OUTPUT_BYTES * 8,
     ),
   );
 

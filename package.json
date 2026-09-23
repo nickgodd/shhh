@@ -1,5 +1,5 @@
 {
-  "name": "prrr-e2ee-chat",
+  "name": "shhh",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node --test test/integration.test.js",
     "check": "node --check server.js && node --check public/js/crypto.js && node --check public/js/app.js"
   },
   "engines": {

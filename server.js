@@ -115,8 +115,12 @@ function isPublicKey(value) {
   return decodeCanonicalBase64(value, 32)?.length === 32;
 }
 
+function normalizeSessionId(value) {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
 function isSessionId(value) {
-  return typeof value === "string" && /^[A-Z2-7]{16}$/u.test(value);
+  return /^[A-Z2-7]{16}$/u.test(normalizeSessionId(value));
 }
 
 function isServerId(value) {
@@ -360,6 +364,21 @@ function sendError(socket, code, opId) {
   sendJson(socket, { type: "error", code, ...(opId ? { opId } : {}) });
 }
 
+function sendDialogResolved([firstId, secondId], details) {
+  for (const sessionId of [firstId, secondId]) {
+    const session = onlineSession(sessionId);
+    if (!session) continue;
+    sendJson(session.ws, {
+      type: "dialog:resolved",
+      requestId: details.requestId,
+      chatId: details.chatId,
+      peerId: sessionId === firstId ? secondId : firstId,
+      outcome: details.outcome,
+      reason: details.reason,
+    });
+  }
+}
+
 function removeChat(chatId, actorId, reason) {
   const chat = chats.get(chatId);
   if (!chat) return;
@@ -375,6 +394,11 @@ function removeChat(chatId, actorId, reason) {
       reason,
     });
   }
+  sendDialogResolved([chat.firstId, chat.secondId], {
+    chatId,
+    outcome: reason === "ended" ? "ended" : "closed",
+    reason,
+  });
 }
 
 function removeDialogRequest(requestId, reason) {
@@ -392,6 +416,11 @@ function removeDialogRequest(requestId, reason) {
       reason,
     });
   }
+  sendDialogResolved([request.fromId, request.toId], {
+    requestId,
+    outcome: reason === "cancelled" ? "cancelled" : "rejected",
+    reason,
+  });
 }
 
 function teardownAssociations(session, reason) {
@@ -438,7 +467,8 @@ function handleCreate(socket, message) {
     sendError(socket, "CREATE_ONLY", message.opId);
     return;
   }
-  if (!isSessionId(message.sessionId) || !isPublicKey(message.identityPublicKey)) {
+  const sessionId = normalizeSessionId(message.sessionId);
+  if (!isSessionId(sessionId) || !isPublicKey(message.identityPublicKey)) {
     sendError(socket, "BAD_REQUEST", message.opId);
     return;
   }
@@ -450,13 +480,13 @@ function handleCreate(socket, message) {
     sendError(socket, "POW_INVALID", message.opId);
     return;
   }
-  if (sessions.has(message.sessionId)) {
+  if (sessions.has(sessionId)) {
     sendError(socket, "SESSION_EXISTS", message.opId);
     return;
   }
 
   const session = {
-    id: message.sessionId,
+    id: sessionId,
     identityPublicKey: message.identityPublicKey,
     ws: socket,
     detached: false,
@@ -474,7 +504,8 @@ function handleCreate(socket, message) {
 }
 
 function handleSearch(session, message) {
-  if (!isSessionId(message.targetId)) {
+  const targetId = normalizeSessionId(message.targetId);
+  if (!isSessionId(targetId)) {
     sendError(session.ws, "INVALID_SEARCH", message.opId);
     return;
   }
@@ -483,7 +514,7 @@ function handleSearch(session, message) {
     return;
   }
 
-  const target = onlineSession(message.targetId);
+  const target = onlineSession(targetId);
   sendJson(session.ws, {
     type: "search:result",
     opId: message.opId,
@@ -498,11 +529,12 @@ function handleSearch(session, message) {
 }
 
 function handleDialogRequest(session, message) {
-  if (!isSessionId(message.to) || !isPublicKey(message.ephemeralPublicKey)) {
+  const targetId = normalizeSessionId(message.to);
+  if (!isSessionId(targetId) || !isPublicKey(message.ephemeralPublicKey)) {
     sendError(session.ws, "INVALID_DIALOG", message.opId);
     return;
   }
-  if (message.to === session.id || findChat(session.id, message.to)) {
+  if (targetId === session.id || findChat(session.id, targetId)) {
     sendError(session.ws, "INVALID_DIALOG", message.opId);
     return;
   }
@@ -515,7 +547,7 @@ function handleDialogRequest(session, message) {
     return;
   }
 
-  const target = onlineSession(message.to);
+  const target = onlineSession(targetId);
   if (!target) {
     sendError(session.ws, "SESSION_OFFLINE", message.opId);
     return;
@@ -617,7 +649,15 @@ function handleDialogAccept(session, message) {
 
   const toAcceptor = sendJson(session.ws, acceptedPayload(chat, request, session.id, message.ephemeralPublicKey));
   const toRequester = sendJson(requester.ws, acceptedPayload(chat, request, requester.id, message.ephemeralPublicKey));
-  if (!toAcceptor || !toRequester) removeChat(chat.id, session.id, "offline");
+  if (!toAcceptor || !toRequester) {
+    removeChat(chat.id, session.id, "offline");
+    return;
+  }
+  sendDialogResolved([request.fromId, request.toId], {
+    requestId: request.requestId,
+    chatId: chat.id,
+    outcome: "accepted",
+  });
 }
 
 function handleDialogReject(session, message) {
@@ -639,6 +679,11 @@ function handleDialogReject(session, message) {
     opId: request.opId,
     reason: "rejected",
   });
+  sendDialogResolved([request.fromId, request.toId], {
+    requestId: request.requestId,
+    outcome: "rejected",
+    reason: "rejected",
+  });
 }
 
 function handleDialogCancel(session, message) {
@@ -658,6 +703,11 @@ function handleDialogCancel(session, message) {
     type: "dialog:rejected",
     requestId: request.requestId,
     opId: request.opId,
+    reason: "cancelled",
+  });
+  sendDialogResolved([request.fromId, request.toId], {
+    requestId: request.requestId,
+    outcome: "cancelled",
     reason: "cancelled",
   });
 }

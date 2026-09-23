@@ -65,6 +65,7 @@ const state = {
   pendingRegistration: null,
   session: null,
   chats: new Map(),
+  derivingChats: new Map(),
   incoming: new Map(),
   outgoing: new Map(),
   accepting: new Map(),
@@ -121,6 +122,15 @@ function createElement(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function clearFoundNotification(peerId = null) {
+  if (peerId && state.foundUser && state.foundUser.id !== peerId) return;
+  state.foundUser = null;
+  elements.searchResultId.textContent = "";
+  elements.searchResult.hidden = true;
+  elements.requestButton.disabled = false;
+  elements.requestButton.textContent = "Отправить запрос";
 }
 
 function isOpenSocket(socket = state.socket) {
@@ -358,19 +368,19 @@ function clearLocalSession() {
   if (state.session) state.session.identityPrivateKey = null;
   state.session = null;
   state.chats.clear();
+  state.derivingChats.clear();
   state.incoming.clear();
   state.outgoing.clear();
   state.accepting.clear();
   state.sendingChatIds.clear();
   state.selectedChatId = null;
-  state.foundUser = null;
+  clearFoundNotification();
   state.searchOperationId = null;
   state.activeRequestId = null;
 
   if (elements.requestDialog.open) elements.requestDialog.close();
   elements.profilePanel.hidden = true;
   elements.profileButton.setAttribute("aria-expanded", "false");
-  elements.searchResult.hidden = true;
   elements.searchForm.reset();
   elements.messageInput.value = "";
   elements.messages.replaceChildren(elements.emptyChat);
@@ -463,7 +473,7 @@ function renderSelectedChat() {
 
   const hasChat = Boolean(chat);
   elements.emptyChat.hidden = hasChat;
-  elements.chatTitle.textContent = hasChat ? chat.peerId : "prrr";
+  elements.chatTitle.textContent = hasChat ? chat.peerId : "shhh";
   elements.chatState.textContent = hasChat ? "E2EE · AES-256-GCM" : "Ожидание собеседника";
   elements.fingerprintBar.hidden = !hasChat;
   elements.fingerprint.textContent = hasChat ? chat.fingerprint : "";
@@ -534,9 +544,8 @@ function searchForUser() {
     return;
   }
 
-  state.foundUser = null;
+  clearFoundNotification();
   state.searchOperationId = createMessageId();
-  elements.searchResult.hidden = true;
   elements.searchInput.disabled = true;
   elements.searchForm.querySelector("button").disabled = true;
 
@@ -626,10 +635,7 @@ function cancelOutgoingRequest(opId) {
   if (entry.ephemeralKeyPair) entry.ephemeralKeyPair.privateKey = null;
   state.outgoing.delete(opId);
   renderOutgoingRequests();
-  if (state.foundUser?.id === entry.targetId) {
-    elements.requestButton.disabled = false;
-    elements.requestButton.textContent = "Отправить запрос";
-  }
+  clearFoundNotification(entry.targetId);
 }
 
 function handleIncomingRequest(message) {
@@ -680,8 +686,10 @@ function reviewRequest(requestId) {
 function rejectActiveRequest() {
   const requestId = state.activeRequestId;
   if (!requestId) return;
+  const request = state.incoming.get(requestId);
   sendProtocol({ type: "dialog:reject", requestId });
   state.incoming.delete(requestId);
+  clearFoundNotification(request?.fromId);
   closeRequestDialog();
   renderIncomingRequests();
 }
@@ -716,6 +724,10 @@ async function acceptActiveRequest() {
   }
 }
 
+function handleDialogResolved(message) {
+  clearFoundNotification(message.peerId);
+}
+
 function handleDialogRejected(message) {
   let entry;
   for (const candidate of state.outgoing.values()) {
@@ -728,10 +740,7 @@ function handleDialogRejected(message) {
   if (entry) {
     if (entry.ephemeralKeyPair) entry.ephemeralKeyPair.privateKey = null;
     state.outgoing.delete(entry.opId);
-    if (state.foundUser?.id === entry.targetId) {
-      elements.requestButton.disabled = false;
-      elements.requestButton.textContent = "Отправить запрос";
-    }
+    clearFoundNotification(entry.targetId);
   }
 
   if (state.incoming.delete(message.requestId)) closeRequestDialog();
@@ -775,8 +784,10 @@ async function handleDialogAccepted(message) {
   localId = message.initiator === true ? state.session.id : message.peerId;
   peerId = message.initiator === true ? message.peerId : state.session.id;
 
-  try {
-    const context = await deriveChatContext({
+  let contextPromise = state.derivingChats.get(message.chatId);
+  const ownsDerivation = !contextPromise;
+  if (!contextPromise) {
+    contextPromise = deriveChatContext({
       chatId: message.chatId,
       localId,
       peerId,
@@ -784,6 +795,12 @@ async function handleDialogAccepted(message) {
       localEphemeralPublicKey: localPair.publicKey,
       peerEphemeralPublicKey: message.peerEphemeralPublicKey,
     });
+    state.derivingChats.set(message.chatId, contextPromise);
+  }
+
+  try {
+    const context = await contextPromise;
+    if (state.chats.has(message.chatId)) return;
 
     const chat = {
       id: message.chatId,
@@ -798,6 +815,7 @@ async function handleDialogAccepted(message) {
     chat.thread.hidden = true;
     state.chats.set(chat.id, chat);
     elements.messages.append(chat.thread);
+    clearFoundNotification(peerId);
 
     if (requestEntry) {
       requestEntry.ephemeralKeyPair.privateKey = null;
@@ -814,13 +832,19 @@ async function handleDialogAccepted(message) {
     showToast("Чат создан. Сверьте отпечаток по независимому каналу.");
   } catch {
     localPair.privateKey = null;
-    sendProtocol({ type: "chat:crypto-error", chatId: message.chatId });
+    if (ownsDerivation) {
+      sendProtocol({ type: "chat:crypto-error", chatId: message.chatId });
+      showToast("Не удалось согласовать ключи чата.");
+    }
     state.accepting.delete(message.requestId);
     if (requestEntry) {
       requestEntry.ephemeralKeyPair.privateKey = null;
       state.outgoing.delete(requestEntry.opId);
     }
-    showToast("Не удалось согласовать ключи чата.");
+  } finally {
+    if (state.derivingChats.get(message.chatId) === contextPromise) {
+      state.derivingChats.delete(message.chatId);
+    }
   }
 }
 
@@ -849,6 +873,7 @@ function removeChat(chatId) {
   chat.thread.remove();
   state.chats.delete(chatId);
   state.sendingChatIds.delete(chatId);
+  clearFoundNotification(chat.peerId);
 
   if (state.selectedChatId === chatId) {
     state.selectedChatId = state.chats.keys().next().value ?? null;
@@ -920,10 +945,7 @@ function handleServerError(message) {
   if (outgoingEntry) {
     if (outgoingEntry.ephemeralKeyPair) outgoingEntry.ephemeralKeyPair.privateKey = null;
     state.outgoing.delete(outgoingEntry.opId);
-    if (state.foundUser?.id === outgoingEntry.targetId) {
-      elements.requestButton.disabled = false;
-      elements.requestButton.textContent = "Отправить запрос";
-    }
+    clearFoundNotification(outgoingEntry.targetId);
   }
 
   renderSessionState();
@@ -946,6 +968,9 @@ async function routeServerMessage(message) {
       break;
     case "dialog:rejected":
       handleDialogRejected(message);
+      break;
+    case "dialog:resolved":
+      handleDialogResolved(message);
       break;
     case "chat:message":
       await handleChatMessage(message);
@@ -974,10 +999,7 @@ elements.searchForm.addEventListener("submit", (event) => {
 });
 elements.searchInput.addEventListener("input", () => {
   elements.searchInput.value = normalizeSessionId(elements.searchInput.value);
-  state.foundUser = null;
-  elements.searchResult.hidden = true;
-  elements.requestButton.disabled = false;
-  elements.requestButton.textContent = "Отправить запрос";
+  clearFoundNotification();
 });
 elements.requestButton.addEventListener("click", () => void sendDialogRequest());
 elements.incomingList.addEventListener("click", (event) => {
